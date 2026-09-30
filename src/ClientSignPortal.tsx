@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { PenTool, Check, ChevronDown, ShieldCheck, RefreshCw, AlertCircle, X, Send, ChevronRight, ChevronLeft } from 'lucide-react';
+import { PenTool, Check, ChevronDown, ShieldCheck, RefreshCw, AlertCircle, X, Download, ChevronRight, ChevronLeft } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
@@ -94,11 +94,6 @@ export default function ClientSignPortal() {
   const sigCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-
-  // Share modal state
-  const [showShareModal, setShowShareModal] = useState(false);
-  const [shareEmail, setShareEmail] = useState('');
-  const [sharePhone, setSharePhone] = useState('');
 
   useEffect(() => {
     if (!requestId) {
@@ -257,11 +252,6 @@ export default function ClientSignPortal() {
         throw new Error(errJson.message || 'נכשלה שמירת החתימה בענן');
       }
 
-      if (rawSigners.length > 0) {
-        if (rawSigners[0].email) setShareEmail(rawSigners[0].email);
-        if (rawSigners[0].phone) setSharePhone(rawSigners[0].phone);
-      }
-
       setSuccess(true);
     } catch (err: any) {
       alert('שגיאה בשמירת החתימה: ' + err.message);
@@ -285,22 +275,6 @@ export default function ClientSignPortal() {
         setTimeout(() => fieldEl.classList.remove('ring-4', 'ring-amber-500', 'ring-opacity-80', 'scale-[1.03]'), 1200);
       }
     }, 150);
-  };
-
-  const shareViaWhatsApp = () => {
-    const phone = sharePhone.replace(/\D/g, '');
-    const msg = `שלום,\nהמסמך נחתם בהצלחה דרך מערכת DocFlow.\nתודה רבה.`;
-    const url = phone
-      ? `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`
-      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
-    window.open(url, '_blank');
-  };
-
-  const shareViaEmail = () => {
-    const subject = encodeURIComponent('המסמך נחתם בהצלחה - DocFlow');
-    const body = encodeURIComponent('שלום,\n\nהמסמך שנשלח לחתימה נחתם בהצלחה.\n\nבברכה,\nDocFlow');
-    const mailtoUrl = `mailto:${shareEmail}?subject=${subject}&body=${body}`;
-    window.open(mailtoUrl, '_self');
   };
 
   // Helper to accurately map touch/mouse coordinates to canvas internal resolution
@@ -386,103 +360,43 @@ export default function ClientSignPortal() {
   }
 
   if (success) {
+    const downloadPdfUrl = docData?.pdf_file_id 
+      ? `${APPWRITE_CONFIG.endpoint}/storage/buckets/${APPWRITE_CONFIG.bucketId}/files/${docData.pdf_file_id}/view?project=${APPWRITE_CONFIG.projectId}`
+      : '#';
+
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 text-center" dir="rtl">
-        <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-sm max-w-sm w-full border border-slate-200 flex flex-col items-center">
-          <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mb-4 border border-emerald-200">
-            <Check size={28} />
+        <div className="bg-white p-8 sm:p-10 rounded-3xl shadow-xl max-w-md w-full border border-slate-200/80 flex flex-col items-center animate-in fade-in zoom-in-95 duration-200">
+          {/* Big Verified Seal */}
+          <div className="w-20 h-20 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mb-5 border-2 border-emerald-200/80 shadow-md shadow-emerald-500/10">
+            <Check size={40} className="stroke-[3]" />
           </div>
-          <h2 className="text-xl font-bold text-slate-900 mb-1">המסמך נחתם בהצלחה</h2>
-          <p className="text-slate-500 text-xs mb-6">
-            החתימה נקלטה במערכת ונשמרה באופן מאובטח.
+
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-2 tracking-tight">
+            המסמך נחתם בהצלחה!
+          </h2>
+          <p className="text-slate-500 text-sm mb-8 leading-relaxed max-w-xs">
+            החתימה נקלטה ואומתה במערכת באופן מאובטח בהתאם לחוק חתימה אלקטרונית.
           </p>
 
-          {/* Share Box */}
-          <div className="w-full space-y-2 mb-6 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-            <p className="text-slate-700 text-xs font-medium">מעוניין לקבל עותק מהמסמך?</p>
-            
-            <button
-              onClick={() => setShowShareModal(true)}
-              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-medium rounded-lg flex items-center justify-center gap-2 text-xs transition-colors"
-            >
-              <Send size={14} />
-              <span>שליחת עותק ב-WhatsApp או במייל</span>
-            </button>
-          </div>
+          {/* Download Button with Arrow */}
+          <a
+            href={downloadPdfUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            download={`${docData?.document_title || 'מסמך_חתום'}.pdf`}
+            className="w-full h-14 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-bold text-base rounded-2xl shadow-lg hover:shadow-xl flex items-center justify-center gap-3 transition-all cursor-pointer mb-6"
+          >
+            <Download size={22} className="stroke-[2.5]" />
+            <span>הורדת המסמך החתום</span>
+          </a>
 
-          <div className="text-[11px] text-slate-400 flex items-center gap-1">
-            <ShieldCheck size={13} className="text-slate-400" />
-            <span>מאומת דיגיטלית במערכת DocFlow</span>
+          {/* Security & Verification Footer */}
+          <div className="w-full pt-5 border-t border-slate-100 flex items-center justify-center gap-2 text-xs text-slate-400 font-medium">
+            <ShieldCheck size={16} className="text-emerald-600" />
+            <span>מאומת דיגיטלית במערכת DocFlow Sign</span>
           </div>
         </div>
-
-        {/* Share Modal */}
-        {showShareModal && (
-          <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4" dir="rtl">
-            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm overflow-hidden shadow-xl">
-              <div className="p-4 border-b border-slate-100 flex justify-between items-center">
-                <h3 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
-                  <Send size={15} />
-                  <span>שליחת עותק חתום</span>
-                </h3>
-                <button onClick={() => setShowShareModal(false)} className="text-slate-400 hover:text-slate-700">
-                  <X size={18} />
-                </button>
-              </div>
-              
-              <div className="p-4 space-y-3.5 text-right">
-                {/* WhatsApp */}
-                <div className="space-y-1">
-                  <label className="text-xs text-slate-600 font-medium">מספר WhatsApp</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="tel"
-                      value={sharePhone}
-                      onChange={e => setSharePhone(e.target.value)}
-                      placeholder="050-0000000"
-                      className="flex-1 h-9 px-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 text-xs placeholder:text-slate-400 focus:outline-none focus:border-slate-400"
-                      dir="ltr"
-                    />
-                    <button
-                      onClick={shareViaWhatsApp}
-                      className="px-4 h-9 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg text-xs transition-colors"
-                    >
-                      שלח
-                    </button>
-                  </div>
-                </div>
-
-                {/* Email */}
-                <div className="space-y-1">
-                  <label className="text-xs text-slate-600 font-medium">כתובת אימייל</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="email"
-                      value={shareEmail}
-                      onChange={e => setShareEmail(e.target.value)}
-                      placeholder="name@example.com"
-                      className="flex-1 h-9 px-3 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 text-xs placeholder:text-slate-400 focus:outline-none focus:border-slate-400"
-                      dir="ltr"
-                    />
-                    <button
-                      onClick={shareViaEmail}
-                      disabled={!shareEmail}
-                      className="px-4 h-9 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400 text-white font-medium rounded-lg text-xs transition-colors"
-                    >
-                      שלח
-                    </button>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="p-3 border-t border-slate-100 bg-slate-50">
-                <button onClick={() => setShowShareModal(false)} className="w-full py-1.5 text-slate-600 font-medium text-xs">
-                  סגור
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
