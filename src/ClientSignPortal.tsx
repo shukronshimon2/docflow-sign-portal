@@ -94,6 +94,23 @@ export default function ClientSignPortal() {
   const sigCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  // Auto-scroll to center on signature field on load
+  useEffect(() => {
+    if (fields.length > 0 && !loading && !success) {
+      const timer = setTimeout(() => {
+        const firstField = fields.find(f => f.field_type === 'signature' || f.field_type === 'initial') || fields[0];
+        if (firstField) {
+          const fieldEl = document.getElementById(`field-${firstField.id}`);
+          if (fieldEl) {
+            fieldEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+          }
+        }
+      }, 700);
+      return () => clearTimeout(timer);
+    }
+  }, [loading, success, fields.length]);
 
   useEffect(() => {
     if (!requestId) {
@@ -214,12 +231,133 @@ export default function ClientSignPortal() {
     }
   };
 
+  const closeModal = () => {
+    const fieldId = activeField?.id;
+    setShowSigModal(false);
+    setActiveField(null);
+    if (fieldId) {
+      setTimeout(() => {
+        const fieldEl = document.getElementById(`field-${fieldId}`);
+        if (fieldEl) {
+          fieldEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        }
+      }, 100);
+    }
+  };
+
   const saveSignature = () => {
     if (!sigCanvasRef.current || !activeField) return;
     const dataUrl = sigCanvasRef.current.toDataURL('image/png');
-    setFields(prev => prev.map(f => f.id === activeField.id ? { ...f, value: dataUrl } : f));
+    const fieldId = activeField.id;
+    setFields(prev => prev.map(f => f.id === fieldId ? { ...f, value: dataUrl } : f));
     setShowSigModal(false);
     setActiveField(null);
+    setTimeout(() => {
+      const fieldEl = document.getElementById(`field-${fieldId}`);
+      if (fieldEl) {
+        fieldEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      }
+    }, 100);
+  };
+
+  const handleDownloadSignedPdf = async () => {
+    if (!docData?.pdf_file_id) return;
+    setDownloading(true);
+    try {
+      const { PDFDocument } = await import('pdf-lib');
+      const pdfUrl = `${APPWRITE_CONFIG.endpoint}/storage/buckets/${APPWRITE_CONFIG.bucketId}/files/${docData.pdf_file_id}/view?project=${APPWRITE_CONFIG.projectId}`;
+      const resp = await fetch(pdfUrl, { headers: getHeaders() });
+      if (!resp.ok) throw new Error('נכשלה הורדת תבנית המסמך');
+      const pdfBytes = await resp.arrayBuffer();
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const pages = pdfDoc.getPages();
+
+      const fieldsToBurn = (fields && fields.length > 0)
+        ? fields
+        : (docData.fields_json ? JSON.parse(docData.fields_json) : []);
+
+      for (const field of fieldsToBurn) {
+        if (!field.value || field.page_number > pages.length) continue;
+        const page = pages[field.page_number - 1];
+        const { height: pageHeight } = page.getSize();
+
+        if (field.field_type === 'signature' || field.field_type === 'initial') {
+          if (typeof field.value === 'string' && field.value.startsWith('data:image')) {
+            try {
+              const base64 = field.value.split(',')[1];
+              const binStr = atob(base64);
+              const len = binStr.length;
+              const u8 = new Uint8Array(len);
+              for (let i = 0; i < len; i++) u8[i] = binStr.charCodeAt(i);
+              
+              const img = await pdfDoc.embedPng(u8);
+              const pdfY = pageHeight - (field.y + field.height);
+              page.drawImage(img, {
+                x: field.x,
+                y: pdfY,
+                width: field.width,
+                height: field.height
+              });
+            } catch (err) {
+              console.warn('Failed embedding signature image in client download:', err);
+            }
+          }
+        } else if (field.field_type === 'text' || field.field_type === 'date') {
+          try {
+            // Render text to high-res offscreen canvas so Hebrew RTL & fonts are 100% native and perfect
+            const textCanvas = document.createElement('canvas');
+            const scale = 2;
+            textCanvas.width = Math.max(1, field.width * scale);
+            textCanvas.height = Math.max(1, field.height * scale);
+            const ctx = textCanvas.getContext('2d');
+            if (ctx) {
+              ctx.scale(scale, scale);
+              ctx.direction = 'rtl';
+              ctx.textAlign = 'right';
+              ctx.textBaseline = 'middle';
+              ctx.font = 'bold 14px "Segoe UI", Arial, sans-serif';
+              ctx.fillStyle = '#0f172a';
+              ctx.fillText(String(field.value), field.width - 4, field.height / 2);
+              
+              const dataUrl = textCanvas.toDataURL('image/png');
+              const base64 = dataUrl.split(',')[1];
+              const binStr = atob(base64);
+              const len = binStr.length;
+              const u8 = new Uint8Array(len);
+              for (let i = 0; i < len; i++) u8[i] = binStr.charCodeAt(i);
+              
+              const img = await pdfDoc.embedPng(u8);
+              const pdfY = pageHeight - (field.y + field.height);
+              page.drawImage(img, {
+                x: field.x,
+                y: pdfY,
+                width: field.width,
+                height: field.height
+              });
+            }
+          } catch (tErr) {
+            console.warn('Failed embedding text field in client download:', tErr);
+          }
+        }
+      }
+
+      const signedBytes = await pdfDoc.save();
+      const blob = new Blob([signedBytes as any], { type: 'application/pdf' });
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      const fileName = `${docData.document_title || docData.title || 'מסמך'}_חתום.pdf`;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    } catch (err: any) {
+      console.error('Download error:', err);
+      alert('שגיאה בהורדת המסמך החתום: ' + err.message);
+    } finally {
+      setDownloading(false);
+    }
   };
 
   const submitFinalSignature = async () => {
@@ -262,15 +400,16 @@ export default function ClientSignPortal() {
 
   const scrollToNextField = () => {
     const firstMissing = fields.find(f => f.field_type !== 'whiteout' && (!f.value || String(f.value).trim() === ''));
-    if (!firstMissing) return;
+    const target = firstMissing || fields.find(f => f.field_type === 'signature' || f.field_type === 'initial') || fields[0];
+    if (!target) return;
 
-    if (firstMissing.page_number !== currentPage) {
-      setCurrentPage(firstMissing.page_number);
+    if (target.page_number !== currentPage) {
+      setCurrentPage(target.page_number);
     }
     setTimeout(() => {
-      const fieldEl = document.getElementById(`field-${firstMissing.id}`);
+      const fieldEl = document.getElementById(`field-${target.id}`);
       if (fieldEl) {
-        fieldEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        fieldEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
         fieldEl.classList.add('ring-4', 'ring-amber-500', 'ring-opacity-80', 'scale-[1.03]');
         setTimeout(() => fieldEl.classList.remove('ring-4', 'ring-amber-500', 'ring-opacity-80', 'scale-[1.03]'), 1200);
       }
@@ -360,10 +499,6 @@ export default function ClientSignPortal() {
   }
 
   if (success) {
-    const downloadPdfUrl = docData?.pdf_file_id 
-      ? `${APPWRITE_CONFIG.endpoint}/storage/buckets/${APPWRITE_CONFIG.bucketId}/files/${docData.pdf_file_id}/view?project=${APPWRITE_CONFIG.projectId}`
-      : '#';
-
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 text-center" dir="rtl">
         <div className="bg-white p-8 sm:p-10 rounded-3xl shadow-xl max-w-md w-full border border-slate-200/80 flex flex-col items-center animate-in fade-in zoom-in-95 duration-200">
@@ -380,16 +515,23 @@ export default function ClientSignPortal() {
           </p>
 
           {/* Download Button with Arrow */}
-          <a
-            href={downloadPdfUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            download={`${docData?.document_title || 'מסמך_חתום'}.pdf`}
-            className="w-full h-14 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-bold text-base rounded-2xl shadow-lg hover:shadow-xl flex items-center justify-center gap-3 transition-all cursor-pointer mb-6"
+          <button
+            onClick={handleDownloadSignedPdf}
+            disabled={downloading}
+            className="w-full h-14 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-bold text-base rounded-2xl shadow-lg hover:shadow-xl flex items-center justify-center gap-3 transition-all cursor-pointer mb-6 disabled:opacity-75"
           >
-            <Download size={22} className="stroke-[2.5]" />
-            <span>הורדת המסמך החתום</span>
-          </a>
+            {downloading ? (
+              <>
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span>יוצר מסמך חתום להורדה...</span>
+              </>
+            ) : (
+              <>
+                <Download size={22} className="stroke-[2.5]" />
+                <span>הורדת המסמך החתום</span>
+              </>
+            )}
+          </button>
 
           {/* Security & Verification Footer */}
           <div className="w-full pt-5 border-t border-slate-100 flex items-center justify-center gap-2 text-xs text-slate-400 font-medium">
@@ -426,9 +568,9 @@ export default function ClientSignPortal() {
           </div>
 
           {/* Left: Counter status badge */}
-          <div>
+          <div onClick={scrollToNextField} className="cursor-pointer" title="לחץ למעבר לחתימה">
             {filledCount < totalRequired ? (
-              <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-amber-50 text-amber-900 border border-amber-200 px-2.5 py-1 rounded-md">
+              <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-amber-50 text-amber-900 border border-amber-200 px-2.5 py-1 rounded-md hover:bg-amber-100 transition-colors">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                 <span>נותרה {totalRequired - filledCount} חתימה</span>
               </span>
@@ -574,7 +716,7 @@ export default function ClientSignPortal() {
               </div>
               <button 
                 type="button"
-                onClick={() => setShowSigModal(false)} 
+                onClick={closeModal} 
                 className="w-9 h-9 rounded-full hover:bg-slate-200 text-slate-400 hover:text-slate-700 flex items-center justify-center transition-colors cursor-pointer"
               >
                 <X size={20} />
@@ -621,10 +763,10 @@ export default function ClientSignPortal() {
             <div className="p-4 sm:p-5 border-t border-slate-100 bg-slate-50/90 flex items-center gap-3">
               <button 
                 type="button"
-                onClick={() => setShowSigModal(false)} 
+                onClick={closeModal} 
                 className="flex-1 h-12 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 active:scale-[0.99] text-slate-700 font-bold text-sm transition-all cursor-pointer"
               >
-                ביטול
+                סגור
               </button>
               <button 
                 type="button"
